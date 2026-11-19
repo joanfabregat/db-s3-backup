@@ -48,24 +48,33 @@ jobs:
       - name: Audit Cargo.lock
         run: cargo audit --deny warnings
 
-  # Every integration test against a real server and a real S3-compatible
-  # store: a backup restored into a fresh database and compared by checksum,
-  # multi-database keys, the engine warning, and the failure paths (mysqldump
-  # failing mid-stream, a stall hitting DUMP_TIMEOUT, SIGTERM, an S3 error),
-  # each asserting that no object and no multipart upload is left behind.
+  # Every integration test against a real MySQL or MariaDB server, a real
+  # PostgreSQL server and a real S3-compatible store: a backup restored into
+  # a fresh database and compared by checksum, multi-database keys, `*`,
+  # the engine warning, and the failure paths (the dump failing mid-stream,
+  # a stall hitting DUMP_TIMEOUT, SIGTERM, an S3 error), each asserting that
+  # no object and no multipart upload is left behind.
   integration:
-    name: Integration (${{ matrix.db }})
+    name: Integration (${{ matrix.db }}, ${{ matrix.pg }})
     runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
-        db: ["mysql:8.4", "mariadb:11.4", "mariadb:11.8"]
+        include:
+          - { db: "mysql:8.4", pg: "postgres:14" }
+          - { db: "mariadb:11.4", pg: "postgres:17" }
+          - { db: "mariadb:11.8", pg: "postgres:18" }
     services:
       db:
         image: ${{ matrix.db }}
         env:
           MYSQL_ROOT_PASSWORD: rootpw
         ports: ["3306:3306"]
+      pg:
+        image: ${{ matrix.pg }}
+        env:
+          POSTGRES_PASSWORD: rootpw
+        ports: ["5432:5432"]
       s3:
         image: versity/versitygw:v1.8.0
         env:
@@ -81,13 +90,22 @@ jobs:
       TEST_MYSQL_PORT: "3306"
       TEST_MYSQL_USER: root
       TEST_MYSQL_PASSWORD: rootpw
+      TEST_PG_HOST: 127.0.0.1
+      TEST_PG_PORT: "5432"
+      TEST_PG_USER: postgres
+      TEST_PG_PASSWORD: rootpw
       AWS_ACCESS_KEY_ID: testkey
       AWS_SECRET_ACCESS_KEY: testsecret123
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install the MariaDB client
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mariadb-client
+      # pg_dump must be at least as new as the newest server in the matrix
+      # (18); the version line shows what apt installed.
+      - name: Install the MariaDB and PostgreSQL clients
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mariadb-client postgresql-client
+          pg_dump --version
 
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
@@ -102,6 +120,7 @@ jobs:
         run: |
           for _ in $(seq 1 60); do
             if MYSQL_PWD=rootpw mariadb -h 127.0.0.1 -u root -e 'SELECT 1' >/dev/null 2>&1 \
+                && PGPASSWORD=rootpw psql -h 127.0.0.1 -U postgres -c 'SELECT 1' >/dev/null 2>&1 \
                 && curl -s -o /dev/null http://127.0.0.1:7070; then
               exit 0
             fi
@@ -112,6 +131,11 @@ jobs:
 
       - name: Integration tests
         run: cargo test --test integration --locked -- --test-threads=4
+
+      # The `*` tests back up every database on the server, so they run on
+      # their own, after the tests that create and drop databases.
+      - name: Integration tests for `*`
+        run: cargo test --test integration --locked -- --ignored --test-threads=1
 
   trivy:
     name: Trivy filesystem scan
@@ -136,7 +160,7 @@ jobs:
           exit-code: 1
 
   # Builds the real image, scans it, then runs the database integration tests
-  # through it, so the shipped binary, its mariadb-client and its user are what
+  # through it, so the shipped binary, its database clients and its user are what
   # get tested.
   image:
     name: Image scan and end-to-end tests
@@ -147,6 +171,11 @@ jobs:
         env:
           MYSQL_ROOT_PASSWORD: rootpw
         ports: ["3306:3306"]
+      pg:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: rootpw
+        ports: ["5432:5432"]
       s3:
         image: versity/versitygw:v1.8.0
         env:
@@ -157,12 +186,16 @@ jobs:
         ports: ["7070:7070"]
     env:
       TEST_REQUIRE_INTEGRATION: "1"
-      TEST_IMAGE: mysql-s3-backup:scan
+      TEST_IMAGE: db-s3-backup:scan
       TEST_S3_ENDPOINT: http://127.0.0.1:7070
       TEST_MYSQL_HOST: 127.0.0.1
       TEST_MYSQL_PORT: "3306"
       TEST_MYSQL_USER: root
       TEST_MYSQL_PASSWORD: rootpw
+      TEST_PG_HOST: 127.0.0.1
+      TEST_PG_PORT: "5432"
+      TEST_PG_USER: postgres
+      TEST_PG_PASSWORD: rootpw
       AWS_ACCESS_KEY_ID: testkey
       AWS_SECRET_ACCESS_KEY: testsecret123
     steps:
@@ -176,7 +209,7 @@ jobs:
         with:
           context: .
           load: true
-          tags: mysql-s3-backup:scan
+          tags: db-s3-backup:scan
 
       # Not through setup-trivy: get.trivy.dev stopped resolving on 2026-11-03
       # (aquasecurity/setup-trivy#42). This fetches the GitHub release instead.
@@ -194,13 +227,18 @@ jobs:
         with:
           skip-setup-trivy: true
           scan-type: image
-          image-ref: mysql-s3-backup:scan
+          image-ref: db-s3-backup:scan
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: 1
 
-      - name: Install the MariaDB client
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mariadb-client
+      # pg_dump must be at least as new as the newest server in the matrix
+      # (18); the version line shows what apt installed.
+      - name: Install the MariaDB and PostgreSQL clients
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mariadb-client postgresql-client
+          pg_dump --version
 
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
@@ -215,6 +253,7 @@ jobs:
         run: |
           for _ in $(seq 1 60); do
             if MYSQL_PWD=rootpw mariadb -h 127.0.0.1 -u root -e 'SELECT 1' >/dev/null 2>&1 \
+                && PGPASSWORD=rootpw psql -h 127.0.0.1 -U postgres -c 'SELECT 1' >/dev/null 2>&1 \
                 && curl -s -o /dev/null http://127.0.0.1:7070; then
               exit 0
             fi
@@ -224,6 +263,11 @@ jobs:
 
       - name: End-to-end tests through the image
         run: cargo test --test integration --locked -- --test-threads=4
+
+      # The `*` tests back up every database on the server, so they run on
+      # their own, after the tests that create and drop databases.
+      - name: Integration tests for `*`
+        run: cargo test --test integration --locked -- --ignored --test-threads=1
 
   # The release builds arm64 by cross-compiling (see the Dockerfile); this
   # catches a broken cross build before a tag does. QEMU only runs the runtime

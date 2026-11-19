@@ -719,6 +719,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "db-s3-backup"
+version = "4.1.0"
+dependencies = [
+ "anyhow",
+ "aws-config",
+ "aws-sdk-s3",
+ "aws-smithy-types",
+ "flate2",
+ "http-body-util",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "libc",
+ "md-5 0.10.6",
+ "tokio",
+]
+
+[[package]]
 name = "der"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1336,24 +1354,6 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "mysql-s3-backup"
-version = "4.0.2"
-dependencies = [
- "anyhow",
- "aws-config",
- "aws-sdk-s3",
- "aws-smithy-types",
- "flate2",
- "http-body-util",
- "hyper",
- "hyper-rustls",
- "hyper-util",
- "libc",
- "md-5 0.10.6",
- "tokio",
 ]
 
 [[package]]

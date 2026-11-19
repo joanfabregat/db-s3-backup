@@ -2,7 +2,7 @@ name: Retag Docker image
 
 # Points a Docker Hub tag at an image that is already published, without a
 # rebuild, so the digest stays the same. Used to move `latest` back to a
-# previous release.
+# previous release. Both repositories carry the same images, so both move.
 on:
   workflow_dispatch:
     inputs:
@@ -22,7 +22,7 @@ jobs:
     name: Retag
     runs-on: ubuntu-26.04
     env:
-      IMAGE: joanfabregat/mysql-s3-backup
+      IMAGES: joanfabregat/db-s3-backup joanfabregat/mysql-s3-backup
       TAG: ${{ inputs.tag }}
       SOURCE: ${{ inputs.source }}
     steps:
@@ -44,9 +44,16 @@ jobs:
 
       - name: Retag
         run: |
-          case "$SOURCE" in
-            sha256:*) ref="$IMAGE@$SOURCE" ;;
-            *) ref="$IMAGE:$SOURCE" ;;
-          esac
-          docker buildx imagetools create -t "$IMAGE:$TAG" "$ref"
-          docker buildx imagetools inspect "$IMAGE:$TAG"
+          for image in $IMAGES; do
+            case "$SOURCE" in
+              sha256:*) ref="$image@$SOURCE" ;;
+              *) ref="$image:$SOURCE" ;;
+            esac
+            # Releases before v4.1.0 exist only under mysql-s3-backup.
+            if ! docker buildx imagetools inspect "$ref" >/dev/null 2>&1; then
+              echo "::notice::$ref does not exist; $image:$TAG left as it is"
+              continue
+            fi
+            docker buildx imagetools create -t "$image:$TAG" "$ref"
+            docker buildx imagetools inspect "$image:$TAG"
+          done
