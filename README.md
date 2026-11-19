@@ -196,7 +196,7 @@ The check is advisory: if it cannot run, it warns and the backup proceeds.
 
 **Server versions.** The image ships `pg_dump` 18, which dumps servers from 9.2 through 18. A server newer than the client is refused by `pg_dump`, so a PostgreSQL 19 server needs a release of this image that ships the 19 client.
 
-**Restoring.** A custom-format archive needs a `pg_restore` at least as new as the `pg_dump` that wrote it, so 18; this image has one (`docker run --rm -i --entrypoint pg_restore joanfabregat/db-s3-backup:v4 …`). Plain dumps start with psql's `\restrict` meta-command, added in the August 2025 minor releases: restore them with a `psql` from those releases or later.
+**Restoring.** A custom-format archive needs a `pg_restore` at least as new as the `pg_dump` that wrote it, so 18; this image has one (`docker run --rm -i --entrypoint pg_restore joanfabregat/db-s3-backup:v4 …`). Plain dumps start with psql's `\restrict` meta-command, added in the August 2025 minor releases: restore them with a `psql` from those releases or later. **On a server older than 17, a restore reports one error**, `unrecognized configuration parameter "transaction_timeout"`: `pg_dump` 17 and later start every dump with `SET transaction_timeout = 0`. It is harmless, and both tools carry on past it, unless you run `psql` with `ON_ERROR_STOP` or `pg_restore` with `--exit-on-error`. `pg_restore` then exits 1 with `errors ignored on restore: 1`.
 
 **Globals.** `PG_GLOBALS=1` runs `pg_dumpall --globals-only` before the databases, to `<S3_PREFIX>/<timestamp>.globals.sql.gz`: `CREATE ROLE` statements with their password hashes, role memberships and settings, and tablespaces. Reading the password hashes needs a superuser. Managed services (RDS, Cloud SQL, Azure) give you none, so leave it off there; it fails the run otherwise.
 
@@ -403,11 +403,12 @@ v4 replaced the shell script and `s5cmd` with the Rust binary. The environment v
 2. **`Access denied … when using LOCK TABLES`**: grant `LOCK TABLES`, or set `MYSQL_SINGLE_TRANSACTION=1`.
 3. **Writes stall during a MySQL backup**: `mariadb-dump`'s default locking. See [MySQL: consistency and locking](#mysql-consistency-and-locking). If the log shows a long wait on the upload, the upload is extending the lock: use `MYSQL_SINGLE_TRANSACTION=1`, or a faster link to the bucket.
 4. **`pg_dump: error: aborting because of server version mismatch`**: the server is newer than the image's `pg_dump` 18.
-5. **`permission denied for table pg_authid`** with `PG_GLOBALS=1`: the role is not a superuser. Unset `PG_GLOBALS`.
-6. **`ERROR at line 1: Unknown command '\-'`** when restoring a MySQL dump: see the end of [MySQL: consistency and locking](#mysql-consistency-and-locking).
-7. **`exceeded 600s (DUMP_TIMEOUT)`**: raise `DUMP_TIMEOUT` and the Job's `activeDeadlineSeconds` together.
-8. **`InvalidStorageClass` or similar on an S3-compatible provider**: set `S3_STORAGE_CLASS=""`.
-9. **Container killed for memory**: raise the memory limit, or lower `S3_PART_SIZE_MIB`.
+5. **`unrecognized configuration parameter "transaction_timeout"`** when restoring onto PostgreSQL 16 or older: harmless, see **Restoring** in [PostgreSQL dumps](#postgresql-dumps).
+6. **`permission denied for table pg_authid`** with `PG_GLOBALS=1`: the role is not a superuser. Unset `PG_GLOBALS`.
+7. **`ERROR at line 1: Unknown command '\-'`** when restoring a MySQL dump: see the end of [MySQL: consistency and locking](#mysql-consistency-and-locking).
+8. **`exceeded 600s (DUMP_TIMEOUT)`**: raise `DUMP_TIMEOUT` and the Job's `activeDeadlineSeconds` together.
+9. **`InvalidStorageClass` or similar on an S3-compatible provider**: set `S3_STORAGE_CLASS=""`.
+10. **Container killed for memory**: raise the memory limit, or lower `S3_PART_SIZE_MIB`.
 
 ## Development
 

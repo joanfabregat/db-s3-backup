@@ -794,6 +794,29 @@ fn run_with_input(mut command: Command, input: &[u8]) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
+/// Restores `input` with `command` (psql or pg_restore), allowing exactly one
+/// kind of error: pg_dump 17 and later start every dump with
+/// `SET transaction_timeout = 0`, which servers before 17 reject. The tools
+/// report it and carry on; any other error fails the test, and the caller's
+/// checksum comparison checks the data.
+fn restore(mut command: Command, input: &[u8]) {
+    let mut child = command.spawn().unwrap();
+    child.stdin.take().unwrap().write_all(input).unwrap();
+    let output = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let unexpected: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.contains("ERROR") || line.contains("error:"))
+        .filter(|line| !line.contains("transaction_timeout"))
+        .collect();
+    assert!(unexpected.is_empty(), "restore failed: {stderr}");
+    let tolerated = stderr.contains("transaction_timeout");
+    assert!(
+        output.status.success() || tolerated,
+        "restore failed: {stderr}"
+    );
+}
+
 /// Runs SQL through psql and returns its unaligned, tuples-only output.
 fn psql(database: Option<&str>, input: &[u8]) -> String {
     let mut command = pg_tool("psql", database);
@@ -904,9 +927,9 @@ async fn postgres_custom_format_restores_with_pg_restore() {
     assert!(dump.starts_with(b"PGDMP"), "not a custom-format archive");
     let restored = format!("{db}_r");
     pg_create(&restored);
-    let mut restore = pg_tool("pg_restore", Some(&restored));
-    restore.args(["--no-owner", "--exit-on-error"]);
-    run_with_input(restore, &dump);
+    let mut pg_restore = pg_tool("pg_restore", Some(&restored));
+    pg_restore.args(["--no-owner"]);
+    restore(pg_restore, &dump);
     assert_eq!(pg_checksum(&restored), pg_checksum(&db));
     let view = psql(
         Some(&restored),
@@ -955,7 +978,9 @@ async fn postgres_url_plain_format_and_multiple_databases() {
     let dump = download_gunzipped(&client, &bucket, &keys[0]).await;
     let restored = format!("{first}_r");
     pg_create(&restored);
-    psql(Some(&restored), &dump);
+    let mut psql_restore = pg_tool("psql", Some(&restored));
+    psql_restore.args(["-X", "-q"]);
+    restore(psql_restore, &dump);
     assert_eq!(pg_checksum(&restored), pg_checksum(&first));
 
     pg_drop(&first);
