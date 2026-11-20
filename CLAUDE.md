@@ -1,6 +1,6 @@
 # db-s3-backup
 
-Formerly `mysql-s3-backup`. Every release is published to both `joanfabregat/db-s3-backup` and `joanfabregat/mysql-s3-backup` on Docker Hub, so the binary must stay fully compatible with v4.0: the `MYSQL_*` variables, the MySQL `DATABASE_URL` parsing (no percent-decoding), the defaults, the MySQL object keys and the exit codes never change. Breaking changes go to a v5 published only as `db-s3-backup`.
+Formerly `mysql-s3-backup`. Every release is published to both `joanfabregat/db-s3-backup` and `joanfabregat/mysql-s3-backup` on Docker Hub, and to `ghcr.io/joanfabregat/db-s3-backup`, so the binary must stay fully compatible with v4.0: the `MYSQL_*` variables, the MySQL `DATABASE_URL` parsing (no percent-decoding), the defaults, the MySQL object keys and the exit codes never change. Breaking changes go to a v5 published only as `db-s3-backup`.
 
 ## Code Execution
 

@@ -1,8 +1,8 @@
 name: Retag Docker image
 
-# Points a Docker Hub tag at an image that is already published, without a
+# Points a tag at an image that is already published, without a
 # rebuild, so the digest stays the same. Used to move `latest` back to a
-# previous release. Both repositories carry the same images, so both move.
+# previous release. Every repository carries the same images, so all move.
 on:
   workflow_dispatch:
     inputs:
@@ -21,8 +21,11 @@ jobs:
   retag:
     name: Retag
     runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      packages: write
     env:
-      IMAGES: joanfabregat/db-s3-backup joanfabregat/mysql-s3-backup
+      IMAGES: joanfabregat/db-s3-backup joanfabregat/mysql-s3-backup ghcr.io/joanfabregat/db-s3-backup
       TAG: ${{ inputs.tag }}
       SOURCE: ${{ inputs.source }}
     steps:
@@ -42,6 +45,13 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Retag
         run: |
           for image in $IMAGES; do
@@ -49,7 +59,8 @@ jobs:
               sha256:*) ref="$image@$SOURCE" ;;
               *) ref="$image:$SOURCE" ;;
             esac
-            # Releases before v4.1.0 exist only under mysql-s3-backup.
+            # Releases before v4.1.0 exist only under Docker Hub's
+            # mysql-s3-backup.
             if ! docker buildx imagetools inspect "$ref" >/dev/null 2>&1; then
               echo "::notice::$ref does not exist; $image:$TAG left as it is"
               continue

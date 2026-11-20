@@ -2,7 +2,7 @@
 
 Backs up MySQL, MariaDB and PostgreSQL databases to Amazon S3 or any S3-compatible provider (Backblaze B2, Garage, MinIO, …). It runs the database's own dump tool and streams its output to the bucket as a multipart upload, without writing the dump to disk. The upload is completed only after the dump tool exits 0, and aborted otherwise, so **a truncated dump never becomes an object**.
 
-**Formerly `mysql-s3-backup`.** From v4.1.0, every release is published under both [`joanfabregat/db-s3-backup`](https://hub.docker.com/r/joanfabregat/db-s3-backup) and [`joanfabregat/mysql-s3-backup`](https://hub.docker.com/r/joanfabregat/mysql-s3-backup), with the same digest and the same tags. v4.1 is fully compatible with v4.0: an existing deployment keeps working unchanged on either name.
+**Formerly `mysql-s3-backup`.** From v4.1.0, every release is published under both [`joanfabregat/db-s3-backup`](https://hub.docker.com/r/joanfabregat/db-s3-backup) and [`joanfabregat/mysql-s3-backup`](https://hub.docker.com/r/joanfabregat/mysql-s3-backup), with the same digest and the same tags. v4.1 is fully compatible with v4.0: an existing deployment keeps working unchanged on either name. The same images are also on the GitHub Container Registry as `ghcr.io/joanfabregat/db-s3-backup`.
 
 Full documentation, source and changelog: [github.com/joanfabregat/db-s3-backup](https://github.com/joanfabregat/db-s3-backup).
 
