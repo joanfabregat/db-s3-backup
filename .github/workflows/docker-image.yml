@@ -81,12 +81,22 @@ jobs:
         include:
           - repository: joanfabregat/db-s3-backup
             summary: Stream MySQL, MariaDB and PostgreSQL dumps to S3 and S3-compatible storage
+            notice: ''
           - repository: joanfabregat/mysql-s3-backup
             summary: Now joanfabregat/db-s3-backup. Streams MySQL, MariaDB and PostgreSQL dumps to S3
+            notice: dockerhub/mysql-s3-backup-notice.md
     runs-on: ubuntu-26.04
     steps:
       - name: Check out the repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # README.md is over the 25,000-byte limit of a Hub overview, so the Hub
+      # gets a shorter page that links to it. The old name's page starts with
+      # a notice about the rename.
+      - name: Assemble the overview
+        env:
+          NOTICE: ${{ matrix.notice }}
+        run: cat $NOTICE dockerhub/db-s3-backup.md > "$RUNNER_TEMP/overview.md"
 
       - name: Update Docker Hub description
         uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
@@ -95,8 +105,6 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: ${{ matrix.repository }}
           short-description: ${{ matrix.summary }}
-          # README.md is over the 25,000-byte limit of a Hub overview, so the
-          # Hub gets a shorter page that links to it.
-          readme-filepath: ./DOCKERHUB.md
+          readme-filepath: ${{ runner.temp }}/overview.md
           # Rewrites relative links to GitHub URLs.
           enable-url-completion: true

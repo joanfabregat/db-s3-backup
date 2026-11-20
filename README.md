@@ -380,7 +380,7 @@ What is new:
 - **PostgreSQL support**, through `postgres://` URLs or the `PG_*` variables.
 - **`*`** in `MYSQL_DATABASE` (or a MySQL URL's path) backs up every database on the server.
 - **`mariadb://`** is accepted as a MySQL URL scheme.
-- **The image is about 5 MiB larger**, for the PostgreSQL client.
+- **The image is about 8 MiB larger**, for the PostgreSQL client.
 
 ## Upgrading from v3
 
