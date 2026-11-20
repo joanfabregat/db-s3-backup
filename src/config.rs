@@ -937,7 +937,7 @@ mod tests {
         );
     }
 
-    // ---- New in v4.1 ----
+    // ---- New in v5 ----
 
     #[test]
     fn star_means_every_database_and_always_uses_directories() {

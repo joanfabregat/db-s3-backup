@@ -10,7 +10,7 @@
 
 A container that backs up MySQL, MariaDB and PostgreSQL databases to Amazon S3 or any S3-compatible provider (Backblaze B2, Garage, MinIO, …). It runs the database's own dump tool and streams its output to the bucket as a multipart upload, without writing the dump to disk.
 
-**Formerly `mysql-s3-backup`.** From v4.1.0, every release is published under both `joanfabregat/db-s3-backup` and `joanfabregat/mysql-s3-backup`, with the same digest and the same tags. v4.1 is fully compatible with v4.0: an existing deployment keeps working unchanged on either name. See [Upgrading from v4.0](#upgrading-from-v40). The same images are also on the GitHub Container Registry as `ghcr.io/joanfabregat/db-s3-backup`.
+**Formerly `mysql-s3-backup`.** From v5.0.0, every release is published under both `joanfabregat/db-s3-backup` and `joanfabregat/mysql-s3-backup`, with the same digest and the same tags. v5 reads a v4 MySQL configuration the same way, so most deployments only change their image tag; see [Upgrading from v4](#upgrading-from-v4) for the exceptions. The same images are also on the GitHub Container Registry as `ghcr.io/joanfabregat/db-s3-backup`.
 
 ## How it works
 
@@ -196,7 +196,7 @@ The check is advisory: if it cannot run, it warns and the backup proceeds.
 
 **Server versions.** The image ships `pg_dump` 18, which dumps servers from 9.2 through 18. A server newer than the client is refused by `pg_dump`, so a PostgreSQL 19 server needs a release of this image that ships the 19 client.
 
-**Restoring.** A custom-format archive needs a `pg_restore` at least as new as the `pg_dump` that wrote it, so 18; this image has one (`docker run --rm -i --entrypoint pg_restore joanfabregat/db-s3-backup:v4 …`). Plain dumps start with psql's `\restrict` meta-command, added in the August 2025 minor releases: restore them with a `psql` from those releases or later. **On a server older than 17, a restore reports one error**, `unrecognized configuration parameter "transaction_timeout"`: `pg_dump` 17 and later start every dump with `SET transaction_timeout = 0`. It is harmless, and both tools carry on past it, unless you run `psql` with `ON_ERROR_STOP` or `pg_restore` with `--exit-on-error`. `pg_restore` then exits 1 with `errors ignored on restore: 1`.
+**Restoring.** A custom-format archive needs a `pg_restore` at least as new as the `pg_dump` that wrote it, so 18; this image has one (`docker run --rm -i --entrypoint pg_restore joanfabregat/db-s3-backup:v5 …`). Plain dumps start with psql's `\restrict` meta-command, added in the August 2025 minor releases: restore them with a `psql` from those releases or later. **On a server older than 17, a restore reports one error**, `unrecognized configuration parameter "transaction_timeout"`: `pg_dump` 17 and later start every dump with `SET transaction_timeout = 0`. It is harmless, and both tools carry on past it, unless you run `psql` with `ON_ERROR_STOP` or `pg_restore` with `--exit-on-error`. `pg_restore` then exits 1 with `errors ignored on restore: 1`.
 
 **Globals.** `PG_GLOBALS=1` runs `pg_dumpall --globals-only` before the databases, to `<S3_PREFIX>/<timestamp>.globals.sql.gz`: `CREATE ROLE` statements with their password hashes, role memberships and settings, and tablespaces. Reading the password hashes needs a superuser. Managed services (RDS, Cloud SQL, Azure) give you none, so leave it off there; it fails the run otherwise.
 
@@ -219,7 +219,7 @@ docker run --rm \
   -e AWS_ACCESS_KEY_ID="..." \
   -e AWS_SECRET_ACCESS_KEY="..." \
   -e AWS_REGION="us-west-1" \
-  joanfabregat/db-s3-backup:v4
+  joanfabregat/db-s3-backup:v5
 ```
 
 ### Docker Compose
@@ -227,7 +227,7 @@ docker run --rm \
 ```yaml
 services:
   mysql-backup:
-    image: joanfabregat/db-s3-backup:v4
+    image: joanfabregat/db-s3-backup:v5
     environment:
       MYSQL_HOST: db
       MYSQL_USER: backup
@@ -240,7 +240,7 @@ services:
       AWS_REGION: us-west-1
 
   postgres-backup:
-    image: joanfabregat/db-s3-backup:v4
+    image: joanfabregat/db-s3-backup:v5
     environment:
       PG_HOST: pg
       PG_USER: backup
@@ -284,7 +284,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: mysql-backup
-              image: joanfabregat/db-s3-backup:v4
+              image: joanfabregat/db-s3-backup:v5
               resources:
                 requests: { cpu: 250m, memory: 96Mi }
                 limits: { memory: 192Mi }
@@ -310,7 +310,7 @@ One run uses one UTC timestamp for every object:
 <S3_PREFIX>/<YYYY-MM-DDTHHMMSSZ>.globals.sql.gz         PostgreSQL globals (PG_GLOBALS=1)
 ```
 
-`<ext>` is `sql.gz` for MySQL and PostgreSQL plain dumps, and `dump` for PostgreSQL custom-format archives. With `*` the per-database layout applies even when the server has a single database, so keys do not move when a second one appears. MySQL keys are identical to v3's and v4.0's, so existing lifecycle rules and restore scripts keep working.
+`<ext>` is `sql.gz` for MySQL and PostgreSQL plain dumps, and `dump` for PostgreSQL custom-format archives. With `*` the per-database layout applies even when the server has a single database, so keys do not move when a second one appears. MySQL keys are identical to v3's and v4's, so existing lifecycle rules and restore scripts keep working.
 
 Restore with:
 
@@ -333,7 +333,7 @@ aws s3 cp s3://my-backup-bucket/postgres/2026-10-13T020000Z.globals.sql.gz - | g
 A MySQL run with `HEARTBEAT_URL` set logs:
 
 ```
-db-s3-backup 4.1.0
+db-s3-backup 5.0.0
 Dumping MySQL database: app
 Streaming dump to S3: s3://my-backup-bucket/mysql/daily/2026-10-13T020000Z.sql.gz
 Uploaded successfully: 924.3 MiB compressed (4121.7 MiB raw) in 58 part(s), 124.6s.
@@ -345,7 +345,7 @@ Heartbeat sent.
 A PostgreSQL run with `*` and `PG_GLOBALS=1`:
 
 ```
-db-s3-backup 4.1.0
+db-s3-backup 5.0.0
 Found 2 database(s): app, postgres
 Dumping PostgreSQL roles and tablespaces
 Streaming dump to S3: s3://my-backup-bucket/postgres/2026-10-13T020000Z.globals.sql.gz
@@ -365,19 +365,22 @@ Backup complete.
 | `1` | Invalid configuration, `*` could not list the databases, or a database failed. Databases after it are not attempted. |
 | `130`, `143` | Stopped by `SIGINT` or `SIGTERM`; the current upload was aborted. |
 
-## Upgrading from v4.0
+## Upgrading from v4
 
-Nothing to change: v4.1 reads every v4.0 variable the same way, keeps the defaults, the object keys and the exit codes, and still installs `mariadb-client`. The image is published under both names; switching to `joanfabregat/db-s3-backup` is optional.
+v5 reads every v4 variable the same way, keeps the defaults, the MySQL object keys and the exit codes, and still installs `mariadb-client`. Change the image tag from `v4` to `v5`; the `v4` tag stays on v4.0.2. The image is published under both names; switching to `joanfabregat/db-s3-backup` is optional.
 
-What is new or different:
+Check these before upgrading:
+
+- **A configuration that sets both `MYSQL_*` and `PG_*` variables is now an error.** v4 ignored the `PG_*` ones. This matters if the backup container shares an `envFrom` with an application that uses `PG_*` names.
+- **The binary is `/usr/local/bin/db-s3-backup`**, and the entrypoint points at it. `/usr/local/bin/mysql-s3-backup` remains as a symlink for deployments that override the entrypoint.
+- **The first log line reads `db-s3-backup <version>`** instead of `mysql-s3-backup <version>`, for log alerts that match on it.
+
+What is new:
 
 - **PostgreSQL support**, through `postgres://` URLs or the `PG_*` variables.
 - **`*`** in `MYSQL_DATABASE` (or a MySQL URL's path) backs up every database on the server.
 - **`mariadb://`** is accepted as a MySQL URL scheme.
-- **A configuration that sets both `MYSQL_*` and `PG_*` variables is now an error.** v4.0 ignored the `PG_*` ones. Check this if the backup container shares an `envFrom` with an application that uses `PG_*` names.
-- **The binary is `/usr/local/bin/db-s3-backup`**, and the entrypoint points at it. `/usr/local/bin/mysql-s3-backup` remains as a symlink for deployments that override the entrypoint.
-- **The first log line reads `db-s3-backup <version>`** instead of `mysql-s3-backup <version>`.
-- **The image is about 5 MiB larger**, for the PostgreSQL client.
+- **The image is about 8 MiB larger**, for the PostgreSQL client.
 
 ## Upgrading from v3
 

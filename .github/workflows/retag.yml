@@ -59,7 +59,7 @@ jobs:
               sha256:*) ref="$image@$SOURCE" ;;
               *) ref="$image:$SOURCE" ;;
             esac
-            # Releases before v4.1.0 exist only under Docker Hub's
+            # Releases before v5.0.0 exist only under Docker Hub's
             # mysql-s3-backup.
             if ! docker buildx imagetools inspect "$ref" >/dev/null 2>&1; then
               echo "::notice::$ref does not exist; $image:$TAG left as it is"
