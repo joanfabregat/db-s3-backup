@@ -1,5 +1,5 @@
 //! End-to-end tests against a real S3-compatible server and, for the tests
-//! that need one, a real MySQL or MariaDB server.
+//! that need one, a real MySQL, MariaDB or PostgreSQL server.
 //!
 //! Configured through the environment; CI sets all of it (see
 //! .github/workflows/ci.yml):
@@ -10,9 +10,18 @@
 //! - `TEST_MYSQL_HOST`, `TEST_MYSQL_PORT`, `TEST_MYSQL_USER`,
 //!   `TEST_MYSQL_PASSWORD`: a server the user can create databases on. The
 //!   `mariadb` (or `mysql`) client must be on PATH to seed and restore.
+//! - `TEST_PG_HOST`, `TEST_PG_PORT`, `TEST_PG_USER`, `TEST_PG_PASSWORD`: a
+//!   PostgreSQL server the user can create databases and roles on. `psql`
+//!   and `pg_restore` must be on PATH to seed and restore, and `pg_dump` and
+//!   `pg_dumpall` too unless `TEST_IMAGE` is set.
 //! - `TEST_IMAGE`: run a Docker image (with `--network host`) instead of the
 //!   binary built by Cargo. Tests that replace mysqldump with a fake are
 //!   skipped in that mode.
+//!
+//! The tests for `*` back up every database on the server, so they cannot
+//! share it with tests that create and drop databases. They are `#[ignore]`d
+//! and run in a second, single-threaded pass: `cargo test --test integration
+//! -- --ignored --test-threads=1`.
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -187,7 +196,7 @@ fn backup_command(env: &[(String, String)], fake_bin: Option<&Path>) -> Command 
             command
         }
         None => {
-            let mut command = Command::new(env!("CARGO_BIN_EXE_mysql-s3-backup"));
+            let mut command = Command::new(env!("CARGO_BIN_EXE_db-s3-backup"));
             command.env_clear();
             let path = var("PATH").unwrap_or_default();
             let path = match fake_bin {
@@ -685,7 +694,7 @@ fn invalid_configuration_exits_before_doing_anything() {
     if image().is_some() {
         return;
     }
-    let output = Command::new(env!("CARGO_BIN_EXE_mysql-s3-backup"))
+    let output = Command::new(env!("CARGO_BIN_EXE_db-s3-backup"))
         .env_clear()
         .env("MYSQL_HOST", "db")
         .env("MYSQL_USER", "u")
@@ -696,5 +705,366 @@ fn invalid_configuration_exits_before_doing_anything() {
     assert_eq!(
         stderr(&output),
         "Error: Missing required environment variable S3_BUCKET\n"
+    );
+}
+
+// ---- `*` on MySQL and MariaDB ----
+
+#[tokio::test]
+#[ignore = "backs up every database: run alone, with --ignored --test-threads=1"]
+async fn mysql_star_backs_up_every_database() {
+    if !configured("TEST_S3_ENDPOINT") || !configured("TEST_MYSQL_HOST") {
+        return;
+    }
+    let client = s3().await;
+    let bucket = create_bucket(&client, "mystar").await;
+    let (first, second) = (unique("sa"), unique("sb"));
+    seed(&first);
+    seed(&second);
+
+    let mut extra: Vec<(&str, String)> = db_env();
+    extra.push(("MYSQL_DATABASE", "*".into()));
+    let extra: Vec<(&str, &str)> = extra.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let output = run_backup(&backup_env(&bucket, &extra), None);
+    assert!(output.status.success());
+    assert!(stdout(&output).contains("Found "), "{}", stdout(&output));
+
+    let keys = keys(&client, &bucket).await;
+    for db in [&first, &second] {
+        assert!(
+            keys.iter().any(|k| k.starts_with(&format!("{db}/"))),
+            "{db} missing from {keys:?}"
+        );
+    }
+    for system in [
+        "mysql/",
+        "sys/",
+        "information_schema/",
+        "performance_schema/",
+    ] {
+        assert!(!keys.iter().any(|k| k.starts_with(system)), "{keys:?}");
+    }
+    for key in &keys {
+        let (db, _) = key.split_once('/').unwrap();
+        assert_backup_key(key, &format!("{db}/"));
+    }
+
+    drop_database(&first);
+    drop_database(&second);
+}
+
+// ---- PostgreSQL ----
+
+fn pg_env() -> Vec<(&'static str, String)> {
+    vec![
+        ("PG_HOST", var("TEST_PG_HOST").unwrap()),
+        (
+            "PG_PORT",
+            var("TEST_PG_PORT").unwrap_or_else(|| "5432".into()),
+        ),
+        ("PG_USER", var("TEST_PG_USER").unwrap()),
+        ("PG_PASSWORD", var("TEST_PG_PASSWORD").unwrap_or_default()),
+    ]
+}
+
+/// A libpq tool connected to the test server, `database` or `postgres`.
+fn pg_tool(program: &str, database: Option<&str>) -> Command {
+    let mut command = Command::new(program);
+    command
+        .args(["-h", &var("TEST_PG_HOST").unwrap()])
+        .args(["-p", &var("TEST_PG_PORT").unwrap_or_else(|| "5432".into())])
+        .args(["-U", &var("TEST_PG_USER").unwrap()])
+        .args(["-d", database.unwrap_or("postgres")])
+        .env("PGPASSWORD", var("TEST_PG_PASSWORD").unwrap_or_default())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
+}
+
+fn run_with_input(mut command: Command, input: &[u8]) -> String {
+    let mut child = command.spawn().unwrap();
+    child.stdin.take().unwrap().write_all(input).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+/// Restores `input` with `command` (psql or pg_restore), allowing exactly one
+/// kind of error: pg_dump 17 and later start every dump with
+/// `SET transaction_timeout = 0`, which servers before 17 reject. The tools
+/// report it and carry on; any other error fails the test, and the caller's
+/// checksum comparison checks the data.
+fn restore(mut command: Command, input: &[u8]) {
+    let mut child = command.spawn().unwrap();
+    child.stdin.take().unwrap().write_all(input).unwrap();
+    let output = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let unexpected: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.contains("ERROR") || line.contains("error:"))
+        .filter(|line| !line.contains("transaction_timeout"))
+        .collect();
+    assert!(unexpected.is_empty(), "restore failed: {stderr}");
+    let tolerated = stderr.contains("transaction_timeout");
+    assert!(
+        output.status.success() || tolerated,
+        "restore failed: {stderr}"
+    );
+}
+
+/// Runs SQL through psql and returns its unaligned, tuples-only output.
+fn psql(database: Option<&str>, input: &[u8]) -> String {
+    let mut command = pg_tool("psql", database);
+    command.args(["-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1"]);
+    run_with_input(command, input)
+}
+
+fn pg_create(db: &str) {
+    psql(
+        None,
+        format!("CREATE DATABASE \"{db}\" ENCODING 'UTF8' TEMPLATE template0").as_bytes(),
+    );
+}
+
+/// Like `seed`: UTF-8 beyond the BMP, binary bytes, NULLs, quotes, a view.
+fn pg_seed(db: &str) {
+    pg_create(db);
+    psql(
+        Some(db),
+        b"CREATE TABLE widgets (
+            id serial PRIMARY KEY,
+            name text,
+            payload bytea,
+            created timestamptz
+          );
+          INSERT INTO widgets (name, payload, created) VALUES
+            ('h\xc3\xa9llo w\xc3\xb6rld \xf0\x9f\x90\xb8', '\\x00ff0a0d5c27', '2026-01-01 00:00:00+00'),
+            ('it''s \"quoted\"', NULL, NULL);
+          INSERT INTO widgets (name, payload)
+            SELECT 'widget ' || n, decode(md5(n::text), 'hex') FROM generate_series(1, 900) n;
+          CREATE VIEW widget_names AS SELECT id, name FROM widgets;",
+    );
+}
+
+fn pg_checksum(db: &str) -> String {
+    psql(
+        Some(db),
+        b"SELECT md5(string_agg(w::text, '|' ORDER BY id)) || ' ' || count(*) FROM widgets w",
+    )
+}
+
+fn pg_drop(db: &str) {
+    psql(
+        None,
+        format!("DROP DATABASE IF EXISTS \"{db}\" WITH (FORCE)").as_bytes(),
+    );
+}
+
+async fn download(client: &Client, bucket: &str, key: &str) -> Vec<u8> {
+    let object = client
+        .get_object()
+        .bucket(bucket)
+        .key(key)
+        .send()
+        .await
+        .unwrap();
+    object.body.collect().await.unwrap().into_bytes().to_vec()
+}
+
+/// `<prefix><YYYY-MM-DDTHHMMSSZ><suffix>`.
+fn assert_key(key: &str, prefix: &str, suffix: &str) {
+    let stamp = key
+        .strip_prefix(prefix)
+        .and_then(|rest| rest.strip_suffix(suffix))
+        .unwrap_or_else(|| panic!("{key} is not {prefix}<timestamp>{suffix}"));
+    assert_eq!(stamp.len(), "2026-10-13T120000Z".len(), "{key}");
+    assert!(
+        stamp.ends_with('Z') && stamp.as_bytes()[10] == b'T',
+        "{key}"
+    );
+}
+
+fn pg_extra(extra: &[(&'static str, String)]) -> Vec<(&'static str, String)> {
+    let mut all = pg_env();
+    all.extend(extra.iter().cloned());
+    all
+}
+
+fn as_refs<'a>(pairs: &'a [(&'a str, String)]) -> Vec<(&'a str, &'a str)> {
+    pairs.iter().map(|(k, v)| (*k, v.as_str())).collect()
+}
+
+#[tokio::test]
+async fn postgres_custom_format_restores_with_pg_restore() {
+    if !configured("TEST_S3_ENDPOINT") || !configured("TEST_PG_HOST") {
+        return;
+    }
+    let client = s3().await;
+    let bucket = create_bucket(&client, "pgcustom").await;
+    let db = unique("pgrt");
+    pg_seed(&db);
+
+    let extra = pg_extra(&[("PG_DATABASE", db.clone()), ("S3_PREFIX", "nightly".into())]);
+    let output = run_backup(&backup_env(&bucket, &as_refs(&extra)), None);
+    assert!(output.status.success());
+    assert!(
+        stdout(&output).contains(&format!("pg_dump of '{db}' waited")),
+        "{}",
+        stdout(&output)
+    );
+
+    let keys = keys(&client, &bucket).await;
+    assert_eq!(keys.len(), 1, "{keys:?}");
+    assert_key(&keys[0], "nightly/", ".dump");
+    assert_eq!(pending_uploads(&client, &bucket).await, 0);
+
+    let dump = download(&client, &bucket, &keys[0]).await;
+    assert!(dump.starts_with(b"PGDMP"), "not a custom-format archive");
+    let restored = format!("{db}_r");
+    pg_create(&restored);
+    let mut pg_restore = pg_tool("pg_restore", Some(&restored));
+    pg_restore.args(["--no-owner"]);
+    restore(pg_restore, &dump);
+    assert_eq!(pg_checksum(&restored), pg_checksum(&db));
+    let view = psql(
+        Some(&restored),
+        b"SELECT name FROM widget_names WHERE id = 1",
+    );
+    assert_eq!(view.trim(), "héllo wörld 🐸");
+
+    pg_drop(&db);
+    pg_drop(&restored);
+}
+
+#[tokio::test]
+async fn postgres_url_plain_format_and_multiple_databases() {
+    if !configured("TEST_S3_ENDPOINT") || !configured("TEST_PG_HOST") {
+        return;
+    }
+    let client = s3().await;
+    let bucket = create_bucket(&client, "pgplain").await;
+    let (first, second) = (unique("pa"), unique("pb"));
+    pg_seed(&first);
+    pg_seed(&second);
+
+    let url = format!(
+        "postgresql://{}:{}@{}:{}/ {first} , {second} ",
+        var("TEST_PG_USER").unwrap(),
+        var("TEST_PG_PASSWORD").unwrap_or_default(),
+        var("TEST_PG_HOST").unwrap(),
+        var("TEST_PG_PORT").unwrap_or_else(|| "5432".into()),
+    );
+    let output = run_backup(
+        &backup_env(&bucket, &[("DATABASE_URL", &url), ("PG_FORMAT", "plain")]),
+        None,
+    );
+    assert!(output.status.success());
+    // The password went through PGPASSWORD; nothing logs the URL.
+    if let Some(password) = var("TEST_PG_PASSWORD") {
+        assert!(!stdout(&output).contains(&password));
+        assert!(!stderr(&output).contains(&password));
+    }
+
+    let keys = keys(&client, &bucket).await;
+    assert_eq!(keys.len(), 2, "{keys:?}");
+    assert_key(&keys[0], &format!("{first}/"), ".sql.gz");
+    assert_key(&keys[1], &format!("{second}/"), ".sql.gz");
+
+    let dump = download_gunzipped(&client, &bucket, &keys[0]).await;
+    let restored = format!("{first}_r");
+    pg_create(&restored);
+    let mut psql_restore = pg_tool("psql", Some(&restored));
+    psql_restore.args(["-X", "-q"]);
+    restore(psql_restore, &dump);
+    assert_eq!(pg_checksum(&restored), pg_checksum(&first));
+
+    pg_drop(&first);
+    pg_drop(&second);
+    pg_drop(&restored);
+}
+
+#[tokio::test]
+async fn postgres_missing_database_fails_without_an_object() {
+    if !configured("TEST_S3_ENDPOINT") || !configured("TEST_PG_HOST") {
+        return;
+    }
+    let client = s3().await;
+    let bucket = create_bucket(&client, "pgmissing").await;
+
+    let extra = pg_extra(&[("PG_DATABASE", unique("absent"))]);
+    let output = run_backup(&backup_env(&bucket, &as_refs(&extra)), None);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("pg_dump failed (exit"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(keys(&client, &bucket).await.is_empty());
+    assert_eq!(pending_uploads(&client, &bucket).await, 0);
+}
+
+#[tokio::test]
+#[ignore = "backs up every database: run alone, with --ignored --test-threads=1"]
+async fn postgres_star_and_globals() {
+    if !configured("TEST_S3_ENDPOINT") || !configured("TEST_PG_HOST") {
+        return;
+    }
+    let client = s3().await;
+    let bucket = create_bucket(&client, "pgstar").await;
+    let (first, second) = (unique("ga"), unique("gb"));
+    pg_seed(&first);
+    pg_seed(&second);
+    let role = unique("role");
+    psql(None, format!("CREATE ROLE \"{role}\" LOGIN").as_bytes());
+
+    let extra = pg_extra(&[("PG_DATABASE", "*".into()), ("PG_GLOBALS", "1".into())]);
+    let output = run_backup(&backup_env(&bucket, &as_refs(&extra)), None);
+    assert!(output.status.success());
+
+    let keys = keys(&client, &bucket).await;
+    let globals: Vec<&String> = keys.iter().filter(|k| !k.contains('/')).collect();
+    assert_eq!(globals.len(), 1, "{keys:?}");
+    assert_key(globals[0], "", ".globals.sql.gz");
+    let sql = String::from_utf8(download_gunzipped(&client, &bucket, globals[0]).await).unwrap();
+    assert!(sql.contains(&format!("CREATE ROLE {role}")), "{sql}");
+
+    for db in [&first, &second, &"postgres".to_owned()] {
+        assert!(
+            keys.iter().any(|k| k.starts_with(&format!("{db}/"))),
+            "{db} missing from {keys:?}"
+        );
+    }
+    assert!(!keys.iter().any(|k| k.starts_with("template")), "{keys:?}");
+    for key in keys.iter().filter(|k| k.contains('/')) {
+        let (db, _) = key.split_once('/').unwrap();
+        assert_key(key, &format!("{db}/"), ".dump");
+    }
+
+    pg_drop(&first);
+    pg_drop(&second);
+    psql(None, format!("DROP ROLE \"{role}\"").as_bytes());
+}
+
+#[test]
+fn mixed_engines_are_rejected_before_doing_anything() {
+    if image().is_some() {
+        return;
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_db-s3-backup"))
+        .env_clear()
+        .env("MYSQL_HOST", "db")
+        .env("PG_DATABASE", "d")
+        .env("S3_BUCKET", "b")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        stderr(&output),
+        "Error: Both MySQL and PostgreSQL variables are set (MYSQL_HOST; PG_DATABASE): configure one engine\n"
     );
 }

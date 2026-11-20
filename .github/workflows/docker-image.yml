@@ -6,10 +6,16 @@ on:
       - 'v*'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   push_to_registry:
-    name: Push Docker image to Docker Hub
+    name: Push Docker image to Docker Hub and GHCR
     runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Check out the repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -26,11 +32,25 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
-          images: joanfabregat/mysql-s3-backup
+          # The same image, same digest, under both names: db-s3-backup is the
+          # name from v4.1 on, and mysql-s3-backup keeps every existing
+          # deployment on `latest`, `v4` and `v4.x` getting releases. GHCR
+          # carries only the new name.
+          images: |
+            joanfabregat/db-s3-backup
+            joanfabregat/mysql-s3-backup
+            ghcr.io/joanfabregat/db-s3-backup
           # The default, latest=auto, adds `latest` for every tag push,
           # prereleases included; the raw rule below is the only source of it.
           flavor: |
@@ -50,12 +70,19 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-  # Docker Hub shows its own copy of the README; refresh it with each stable
-  # release so it describes the image `latest` points at.
+  # Docker Hub shows its own copy of the README; refresh both repositories
+  # with each stable release so they describe the image `latest` points at.
   hub_description:
-    name: Update Docker Hub description
+    name: Update Docker Hub description (${{ matrix.repository }})
     needs: push_to_registry
     if: ${{ !contains(github.ref, '-') && startsWith(github.ref, 'refs/tags/') }}
+    strategy:
+      matrix:
+        include:
+          - repository: joanfabregat/db-s3-backup
+            summary: Stream MySQL, MariaDB and PostgreSQL dumps to S3 and S3-compatible storage
+          - repository: joanfabregat/mysql-s3-backup
+            summary: Now joanfabregat/db-s3-backup. Streams MySQL, MariaDB and PostgreSQL dumps to S3
     runs-on: ubuntu-26.04
     steps:
       - name: Check out the repo
@@ -66,8 +93,10 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: joanfabregat/mysql-s3-backup
-          short-description: Stream mysqldump backups of MySQL and MariaDB to S3 and S3-compatible storage
-          readme-filepath: ./README.md
-          # Rewrites relative links (LICENSE, Cargo.toml) to GitHub URLs.
+          repository: ${{ matrix.repository }}
+          short-description: ${{ matrix.summary }}
+          # README.md is over the 25,000-byte limit of a Hub overview, so the
+          # Hub gets a shorter page that links to it.
+          readme-filepath: ./DOCKERHUB.md
+          # Rewrites relative links to GitHub URLs.
           enable-url-completion: true

@@ -1,10 +1,12 @@
-//! Dumps MySQL/MariaDB databases with mysqldump and streams them, gzipped, to
-//! S3 or an S3-compatible provider. Configured entirely from the environment;
-//! see the README.
+//! Dumps MySQL, MariaDB or PostgreSQL databases and streams them to S3 or an
+//! S3-compatible provider. Configured entirely from the environment; see the
+//! README.
 
 mod config;
 mod dump;
 mod heartbeat;
+mod mysql;
+mod postgres;
 mod s3;
 
 use std::process::ExitCode;
@@ -15,8 +17,8 @@ use aws_smithy_types::date_time::Format;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
 
-use crate::config::{Config, MAX_ATTEMPTS};
-use crate::dump::{Failure, Summary, backup_once, warn_non_transactional_tables};
+use crate::config::{Config, Databases, Engine, MAX_ATTEMPTS, Target};
+use crate::dump::{Failure, Summary, backup_once};
 use crate::s3::Bucket;
 
 const RETRY_DELAY: Duration = Duration::from_secs(5);
@@ -38,22 +40,33 @@ fn mib(bytes: u64) -> f64 {
     bytes as f64 / (1024.0 * 1024.0)
 }
 
-fn report(db: &str, summary: &Summary) {
+fn report(target: &Target, summary: &Summary) {
+    if summary.gzipped {
+        println!(
+            "Uploaded successfully: {:.1} MiB compressed ({:.1} MiB raw) in {} part(s), {:.1}s.",
+            mib(summary.compressed_bytes),
+            mib(summary.raw_bytes),
+            summary.parts,
+            summary.elapsed.as_secs_f64(),
+        );
+    } else {
+        println!(
+            "Uploaded successfully: {:.1} MiB in {} part(s), {:.1}s.",
+            mib(summary.compressed_bytes),
+            summary.parts,
+            summary.elapsed.as_secs_f64(),
+        );
+    }
     println!(
-        "Uploaded successfully: {:.1} MiB compressed ({:.1} MiB raw) in {} part(s), {:.1}s.",
-        mib(summary.compressed_bytes),
-        mib(summary.raw_bytes),
-        summary.parts,
-        summary.elapsed.as_secs_f64(),
-    );
-    println!(
-        "mysqldump of '{db}' waited {:.1}s on the upload.",
+        "{} of {} waited {:.1}s on the upload.",
+        summary.tool,
+        target.label(),
         summary.upload_wait.as_secs_f64()
     );
 }
 
 /// Forwards the first TERM or INT into `tx`, so the running attempt can stop
-/// mysqldump and abort its upload instead of dying with parts left behind.
+/// the dump and abort its upload instead of dying with parts left behind.
 fn watch_signals(tx: watch::Sender<Option<i32>>) {
     let mut term = signal(SignalKind::terminate()).expect("can install a TERM handler");
     let mut int = signal(SignalKind::interrupt()).expect("can install an INT handler");
@@ -67,19 +80,20 @@ fn watch_signals(tx: watch::Sender<Option<i32>>) {
     });
 }
 
-/// Backs up one database, retrying a failed upload with a fresh dump.
-async fn backup_database(
+/// Backs up one target, retrying a failed upload with a fresh dump.
+async fn backup_target(
     cfg: &Config,
     bucket: &Bucket,
-    db: &str,
+    target: &Target,
     key: &str,
     shutdown: &mut watch::Receiver<Option<i32>>,
 ) -> Result<(), ExitCode> {
+    let label = target.label();
     let mut attempt = 1;
     loop {
-        match backup_once(cfg, bucket, db, key, shutdown).await {
+        match backup_once(cfg, bucket, target, key, shutdown).await {
             Ok(summary) => {
-                report(db, &summary);
+                report(target, &summary);
                 return Ok(());
             }
             Err(Failure::Upload(e)) if attempt < MAX_ATTEMPTS => {
@@ -101,23 +115,74 @@ async fn backup_database(
             }
             Err(Failure::TimedOut) => {
                 eprintln!(
-                    "Error: dump and upload of '{db}' exceeded {}s (DUMP_TIMEOUT) and were stopped",
+                    "Error: dump and upload of {label} exceeded {}s (DUMP_TIMEOUT) and were stopped",
                     cfg.dump_timeout.as_secs()
                 );
                 return Err(ExitCode::FAILURE);
             }
             Err(Failure::Dump(message)) => {
-                eprintln!("Error: dump of '{db}' failed: {message}");
+                eprintln!("Error: dump of {label} failed: {message}");
                 return Err(ExitCode::FAILURE);
             }
             Err(Failure::Interrupted(signal)) => {
                 eprintln!(
-                    "Error: backup of '{db}' was interrupted; the incomplete upload was aborted"
+                    "Error: backup of {label} was interrupted; the incomplete upload was aborted"
                 );
                 return Err(ExitCode::from(128 + signal as u8));
             }
         }
     }
+}
+
+async fn run(cfg: &Config) -> Result<(), ExitCode> {
+    let (tx, mut shutdown) = watch::channel(None);
+    watch_signals(tx);
+
+    let bucket = Bucket::new(cfg).await;
+    let timestamp = timestamp(SystemTime::now());
+
+    let databases = dump::databases(cfg).await.map_err(|message| {
+        eprintln!("Error: could not list the databases on the server: {message}");
+        ExitCode::FAILURE
+    })?;
+    if cfg.databases == Databases::All {
+        if databases.is_empty() {
+            eprintln!("Error: the server has no databases to back up");
+            return Err(ExitCode::FAILURE);
+        }
+        println!(
+            "Found {} database(s): {}",
+            databases.len(),
+            databases.join(", ")
+        );
+    }
+
+    // Globals first: they are small, and a missing privilege shows up before
+    // the long dumps rather than after them.
+    if let Engine::Postgres(pg) = &cfg.engine
+        && pg.globals
+    {
+        println!("Dumping PostgreSQL roles and tablespaces");
+        let target = Target::PgGlobals;
+        let key = cfg.object_key(&target, &timestamp);
+        println!("Streaming dump to S3: s3://{}/{key}", cfg.bucket);
+        backup_target(cfg, &bucket, &target, &key, &mut shutdown).await?;
+    }
+
+    for db in databases {
+        println!("Dumping {} database: {db}", cfg.engine_name());
+        if let Engine::Mysql(mysql) = &cfg.engine
+            && mysql.single_transaction
+        {
+            mysql::warn_non_transactional_tables(mysql, &db).await;
+        }
+
+        let target = Target::Database(db);
+        let key = cfg.object_key(&target, &timestamp);
+        println!("Streaming dump to S3: s3://{}/{key}", cfg.bucket);
+        backup_target(cfg, &bucket, &target, &key, &mut shutdown).await?;
+    }
+    Ok(())
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
@@ -129,25 +194,10 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    println!("mysql-s3-backup {}", env!("CARGO_PKG_VERSION"));
+    println!("db-s3-backup {}", env!("CARGO_PKG_VERSION"));
 
-    let (tx, mut shutdown) = watch::channel(None);
-    watch_signals(tx);
-
-    let bucket = Bucket::new(&cfg).await;
-    let timestamp = timestamp(SystemTime::now());
-
-    for db in &cfg.databases {
-        println!("Dumping MySQL database: {db}");
-        if cfg.single_transaction {
-            warn_non_transactional_tables(&cfg, db).await;
-        }
-
-        let key = cfg.object_key(db, &timestamp);
-        println!("Streaming dump to S3: s3://{}/{key}", cfg.bucket);
-        if let Err(code) = backup_database(&cfg, &bucket, db, &key, &mut shutdown).await {
-            return code;
-        }
+    if let Err(code) = run(&cfg).await {
+        return code;
     }
 
     println!("Backup complete.");

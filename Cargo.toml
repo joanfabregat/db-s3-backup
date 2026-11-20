@@ -1,11 +1,11 @@
 [package]
-name = "mysql-s3-backup"
-version = "4.0.2"
+name = "db-s3-backup"
+version = "4.1.0"
 edition = "2024"
 rust-version = "1.94.1"
-description = "Stream mysqldump backups to Amazon S3 and S3-compatible storage"
+description = "Stream MySQL, MariaDB and PostgreSQL dumps to Amazon S3 and S3-compatible storage"
 license = "MIT"
-repository = "https://github.com/joanfabregat/mysql-s3-backup"
+repository = "https://github.com/joanfabregat/db-s3-backup"
 publish = false
 
 [dependencies]

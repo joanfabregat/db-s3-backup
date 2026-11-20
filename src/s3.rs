@@ -1,7 +1,7 @@
 //! Multipart upload to S3.
 //!
 //! An object only exists once `CompleteMultipartUpload` succeeds, and that is
-//! only sent after mysqldump has exited 0. Until then the uploaded parts are
+//! only sent after the dump tool has exited 0. Until then the uploaded parts are
 //! invisible and are discarded by `AbortMultipartUpload`, so a failed dump can
 //! never leave a truncated object behind -- which matters a great deal when
 //! the bucket is under Object Lock and a bad object cannot be deleted.
@@ -60,13 +60,13 @@ impl Bucket {
         }
     }
 
-    pub async fn start_upload(&self, key: &str) -> Result<Upload> {
+    pub async fn start_upload(&self, key: &str, content_type: &str) -> Result<Upload> {
         let mut request = self
             .client
             .create_multipart_upload()
             .bucket(&self.name)
             .key(key)
-            .content_type("application/gzip");
+            .content_type(content_type);
         if let Some(class) = &self.storage_class {
             request = request.storage_class(class.clone());
         }
