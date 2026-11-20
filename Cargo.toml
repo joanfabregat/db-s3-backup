@@ -1,6 +1,6 @@
 [package]
 name = "db-s3-backup"
-version = "4.1.0"
+version = "5.0.0"
 edition = "2024"
 rust-version = "1.94.1"
 description = "Stream MySQL, MariaDB and PostgreSQL dumps to Amazon S3 and S3-compatible storage"

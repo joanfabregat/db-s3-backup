@@ -2,7 +2,7 @@
 
 Backs up MySQL, MariaDB and PostgreSQL databases to Amazon S3 or any S3-compatible provider (Backblaze B2, Garage, MinIO, …). It runs the database's own dump tool and streams its output to the bucket as a multipart upload, without writing the dump to disk. The upload is completed only after the dump tool exits 0, and aborted otherwise, so **a truncated dump never becomes an object**.
 
-**Formerly `mysql-s3-backup`.** From v4.1.0, every release is published under both [`joanfabregat/db-s3-backup`](https://hub.docker.com/r/joanfabregat/db-s3-backup) and [`joanfabregat/mysql-s3-backup`](https://hub.docker.com/r/joanfabregat/mysql-s3-backup), with the same digest and the same tags. v4.1 is fully compatible with v4.0: an existing deployment keeps working unchanged on either name. The same images are also on the GitHub Container Registry as `ghcr.io/joanfabregat/db-s3-backup`.
+**Formerly `mysql-s3-backup`.** From v5.0.0, every release is published under both [`joanfabregat/db-s3-backup`](https://hub.docker.com/r/joanfabregat/db-s3-backup) and [`joanfabregat/mysql-s3-backup`](https://hub.docker.com/r/joanfabregat/mysql-s3-backup), with the same digest and the same tags. v5 reads a v4 MySQL configuration the same way, so most deployments only change their image tag; the [upgrade notes](https://github.com/joanfabregat/db-s3-backup#upgrading-from-v4) list the exceptions. The same images are also on the GitHub Container Registry as `ghcr.io/joanfabregat/db-s3-backup`.
 
 Full documentation, source and changelog: [github.com/joanfabregat/db-s3-backup](https://github.com/joanfabregat/db-s3-backup).
 
@@ -10,9 +10,10 @@ Full documentation, source and changelog: [github.com/joanfabregat/db-s3-backup]
 
 | Tag | Follows |
 |---|---|
-| `v4` | The latest 4.x release. Recommended. |
-| `v4.1` | The latest 4.1.x release. |
-| `v4.1.0` | One release, never moved. |
+| `v5` | The latest 5.x release. Recommended. |
+| `v5.0` | The latest 5.0.x release. |
+| `v5.0.0` | One release, never moved. |
+| `v4` | The last v4 release, v4.0.2, on `mysql-s3-backup` only. |
 | `latest` | The latest release, including the next major version. |
 
 Images are built for `linux/amd64` and `linux/arm64`, on Alpine, with `mariadb-dump` and `pg_dump` 18 (which dumps PostgreSQL 9.2 to 18).
@@ -40,7 +41,7 @@ docker run --rm \
   -e AWS_ACCESS_KEY_ID="..." \
   -e AWS_SECRET_ACCESS_KEY="..." \
   -e AWS_REGION="us-west-1" \
-  joanfabregat/db-s3-backup:v4
+  joanfabregat/db-s3-backup:v5
 ```
 
 PostgreSQL, every database on the server:
@@ -53,7 +54,7 @@ docker run --rm \
   -e AWS_ACCESS_KEY_ID="..." \
   -e AWS_SECRET_ACCESS_KEY="..." \
   -e AWS_REGION="us-west-1" \
-  joanfabregat/db-s3-backup:v4
+  joanfabregat/db-s3-backup:v5
 ```
 
 ## Configuration

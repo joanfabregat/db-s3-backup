@@ -44,8 +44,8 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           # The same image, same digest, under both names: db-s3-backup is the
-          # name from v4.1 on, and mysql-s3-backup keeps every existing
-          # deployment on `latest`, `v4` and `v4.x` getting releases. GHCR
+          # name from v5 on, and mysql-s3-backup keeps every existing
+          # deployment on `latest` getting releases. GHCR
           # carries only the new name.
           images: |
             joanfabregat/db-s3-backup
