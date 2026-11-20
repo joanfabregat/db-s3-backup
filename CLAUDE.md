@@ -15,3 +15,7 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 ```
+
+## Docker Hub
+
+The Hub overview of both repositories is `DOCKERHUB.md`, not `README.md`, which is over the Hub's 25,000-byte limit. When a change adds or renames a variable, a tag or a default, update both.
